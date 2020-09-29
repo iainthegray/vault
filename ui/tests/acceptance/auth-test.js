@@ -65,7 +65,6 @@ module('Acceptance | auth', function(hooks) {
         await component.token('token');
       }
       if (backend.type === 'jwt' || backend.type === 'oidc') {
-        await jwtComponent.jwt('1');
         await jwtComponent.role('test');
       }
       await component.login();
@@ -73,7 +72,7 @@ module('Acceptance | auth', function(hooks) {
       let body = JSON.parse(lastRequest.requestBody);
       if (backend.type === 'token') {
         assert.ok(
-          Object.keys(lastRequest.requestHeaders).includes('X-Vault-Token'),
+          Object.keys(lastRequest.requestHeaders).includes('x-vault-token'),
           'token uses vault token header'
         );
       } else if (backend.type === 'github') {
@@ -81,7 +80,6 @@ module('Acceptance | auth', function(hooks) {
       } else if (backend.type === 'jwt' || backend.type === 'oidc') {
         let authReq = this.server.passthroughRequests[this.server.passthroughRequests.length - 2];
         body = JSON.parse(authReq.requestBody);
-        assert.ok(Object.keys(body).includes('jwt'), `${backend.type} includes jwt`);
         assert.ok(Object.keys(body).includes('role'), `${backend.type} includes role`);
       } else {
         assert.ok(Object.keys(body).includes('password'), `${backend.type} includes password`);

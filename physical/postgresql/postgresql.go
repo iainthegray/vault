@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,8 +89,8 @@ type PostgreSQLLock struct {
 // API client, server address, credentials, and database.
 func NewPostgreSQLBackend(conf map[string]string, logger log.Logger) (physical.Backend, error) {
 	// Get the PostgreSQL credentials to perform read/write operations.
-	connURL, ok := conf["connection_url"]
-	if !ok || connURL == "" {
+	connURL := connectionURL(conf)
+	if connURL == "" {
 		return nil, fmt.Errorf("missing connection_url")
 	}
 
@@ -114,12 +115,28 @@ func NewPostgreSQLBackend(conf map[string]string, logger log.Logger) (physical.B
 		maxParInt = physical.DefaultParallelOperations
 	}
 
+	maxIdleConnsStr, maxIdleConnsIsSet := conf["max_idle_connections"]
+	var maxIdleConns int
+	if maxIdleConnsIsSet {
+		maxIdleConns, err = strconv.Atoi(maxIdleConnsStr)
+		if err != nil {
+			return nil, errwrap.Wrapf("failed parsing max_idle_connections parameter: {{err}}", err)
+		}
+		if logger.IsDebug() {
+			logger.Debug("max_idle_connections set", "max_idle_connections", maxIdleConnsStr)
+		}
+	}
+
 	// Create PostgreSQL handle for the database.
 	db, err := sql.Open("postgres", connURL)
 	if err != nil {
 		return nil, errwrap.Wrapf("failed to connect to postgres: {{err}}", err)
 	}
 	db.SetMaxOpenConns(maxParInt)
+
+	if maxIdleConnsIsSet {
+		db.SetMaxIdleConns(maxIdleConns)
+	}
 
 	// Determine if we should use a function to work around lack of upsert (versions < 9.5)
 	var upsertAvailable bool
@@ -179,6 +196,19 @@ func NewPostgreSQLBackend(conf map[string]string, logger log.Logger) (physical.B
 	}
 
 	return m, nil
+}
+
+// connectionURL first check the environment variables for a connection URL. If
+// no connection URL exists in the environment variable, the Vault config file is
+// checked. If neither the environment variables or the config file set the connection
+// URL for the Postgres backend, because it is a required field, an error is returned.
+func connectionURL(conf map[string]string) string {
+	connURL := conf["connection_url"]
+	if envURL := os.Getenv("VAULT_PG_CONNECTION_URL"); envURL != "" {
+		connURL = envURL
+	}
+
+	return connURL
 }
 
 // splitKey is a helper to split a full path key into individual
@@ -315,7 +345,7 @@ func (p *PostgreSQLBackend) HAEnabled() bool {
 // PostgreSQL table. It will block until either the stop channel is closed or
 // the lock could be acquired successfully. The returned channel will be closed
 // once the lock in the PostgreSQL table cannot be renewed, either due to an
-// error speaking to PostgresSQL or because someone else has taken it.
+// error speaking to PostgreSQL or because someone else has taken it.
 func (l *PostgreSQLLock) Lock(stopCh <-chan struct{}) (<-chan struct{}, error) {
 	l.lock.Lock()
 	defer l.lock.Unlock()

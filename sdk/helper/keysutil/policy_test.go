@@ -2,6 +2,7 @@ package keysutil
 
 import (
 	"context"
+	"crypto/rand"
 	"reflect"
 	"strconv"
 	"sync"
@@ -52,8 +53,10 @@ func TestPolicy_KeyEntryMapUpgrade(t *testing.T) {
 }
 
 func Test_KeyUpgrade(t *testing.T) {
-	testKeyUpgradeCommon(t, NewLockManager(false))
-	testKeyUpgradeCommon(t, NewLockManager(true))
+	lockManagerWithCache, _ := NewLockManager(true, 0)
+	lockManagerWithoutCache, _ := NewLockManager(false, 0)
+	testKeyUpgradeCommon(t, lockManagerWithCache)
+	testKeyUpgradeCommon(t, lockManagerWithoutCache)
 }
 
 func testKeyUpgradeCommon(t *testing.T, lm *LockManager) {
@@ -65,7 +68,7 @@ func testKeyUpgradeCommon(t *testing.T, lm *LockManager) {
 		Storage: storage,
 		KeyType: KeyType_AES256_GCM96,
 		Name:    "test",
-	})
+	}, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,8 +100,10 @@ func testKeyUpgradeCommon(t *testing.T, lm *LockManager) {
 }
 
 func Test_ArchivingUpgrade(t *testing.T) {
-	testArchivingUpgradeCommon(t, NewLockManager(false))
-	testArchivingUpgradeCommon(t, NewLockManager(true))
+	lockManagerWithCache, _ := NewLockManager(true, 0)
+	lockManagerWithoutCache, _ := NewLockManager(false, 0)
+	testArchivingUpgradeCommon(t, lockManagerWithCache)
+	testArchivingUpgradeCommon(t, lockManagerWithoutCache)
 }
 
 func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
@@ -115,7 +120,7 @@ func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
 		Storage: storage,
 		KeyType: KeyType_AES256_GCM96,
 		Name:    "test",
-	})
+	}, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +136,7 @@ func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
 	checkKeys(t, ctx, p, storage, keysArchive, "initial", 1, 1, 1)
 
 	for i := 2; i <= 10; i++ {
-		err = p.Rotate(ctx, storage)
+		err = p.Rotate(ctx, storage, rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +177,7 @@ func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
 	p, _, err = lm.GetPolicy(ctx, PolicyRequest{
 		Storage: storage,
 		Name:    "test",
-	})
+	}, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +217,7 @@ func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
 	p, _, err = lm.GetPolicy(ctx, PolicyRequest{
 		Storage: storage,
 		Name:    "test",
-	})
+	}, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +250,7 @@ func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
 	p, _, err = lm.GetPolicy(ctx, PolicyRequest{
 		Storage: storage,
 		Name:    "test",
-	})
+	}, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,8 +260,10 @@ func testArchivingUpgradeCommon(t *testing.T, lm *LockManager) {
 }
 
 func Test_Archiving(t *testing.T) {
-	testArchivingCommon(t, NewLockManager(false))
-	testArchivingCommon(t, NewLockManager(true))
+	lockManagerWithCache, _ := NewLockManager(true, 0)
+	lockManagerWithoutCache, _ := NewLockManager(false, 0)
+	testArchivingUpgradeCommon(t, lockManagerWithCache)
+	testArchivingUpgradeCommon(t, lockManagerWithoutCache)
 }
 
 func testArchivingCommon(t *testing.T, lm *LockManager) {
@@ -273,7 +280,7 @@ func testArchivingCommon(t *testing.T, lm *LockManager) {
 		Storage: storage,
 		KeyType: KeyType_AES256_GCM96,
 		Name:    "test",
-	})
+	}, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +296,7 @@ func testArchivingCommon(t *testing.T, lm *LockManager) {
 	checkKeys(t, ctx, p, storage, keysArchive, "initial", 1, 1, 1)
 
 	for i := 2; i <= 10; i++ {
-		err = p.Rotate(ctx, storage)
+		err = p.Rotate(ctx, storage, rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -399,7 +406,6 @@ func checkKeys(t *testing.T,
 
 	for i := p.MinDecryptionVersion; i <= p.LatestVersion; i++ {
 		ver := strconv.Itoa(i)
-		// Travis has weird time zone issues and gets super unhappy
 		if !p.Keys[ver].CreationTime.Equal(keysArchive[i].CreationTime) {
 			t.Fatalf("key %d not equivalent between policy keys and test keys archive; policy keys:\n%#v\ntest keys archive:\n%#v\n", i, p.Keys[ver], keysArchive[i])
 		}
@@ -420,7 +426,7 @@ func checkKeys(t *testing.T,
 
 func Test_StorageErrorSafety(t *testing.T) {
 	ctx := context.Background()
-	lm := NewLockManager(false)
+	lm, _ := NewLockManager(true, 0)
 
 	storage := &logical.InmemStorage{}
 	p, _, err := lm.GetPolicy(ctx, PolicyRequest{
@@ -428,7 +434,7 @@ func Test_StorageErrorSafety(t *testing.T) {
 		Storage: storage,
 		KeyType: KeyType_AES256_GCM96,
 		Name:    "test",
-	})
+	}, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +449,7 @@ func Test_StorageErrorSafety(t *testing.T) {
 	// We use checkKeys here just for sanity; it doesn't really handle cases of
 	// errors below so we do more targeted testing later
 	for i := 2; i <= 5; i++ {
-		err = p.Rotate(ctx, storage)
+		err = p.Rotate(ctx, storage, rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -456,7 +462,7 @@ func Test_StorageErrorSafety(t *testing.T) {
 
 	priorLen := len(p.Keys)
 
-	err = p.Rotate(ctx, storage)
+	err = p.Rotate(ctx, storage, rand.Reader)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -468,14 +474,14 @@ func Test_StorageErrorSafety(t *testing.T) {
 
 func Test_BadUpgrade(t *testing.T) {
 	ctx := context.Background()
-	lm := NewLockManager(false)
+	lm, _ := NewLockManager(true, 0)
 	storage := &logical.InmemStorage{}
 	p, _, err := lm.GetPolicy(ctx, PolicyRequest{
 		Upsert:  true,
 		Storage: storage,
 		KeyType: KeyType_AES256_GCM96,
 		Name:    "test",
-	})
+	}, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +499,7 @@ func Test_BadUpgrade(t *testing.T) {
 	p.Keys = nil
 	p.MinDecryptionVersion = 0
 
-	if err := p.Upgrade(ctx, storage); err != nil {
+	if err := p.Upgrade(ctx, storage, rand.Reader); err != nil {
 		t.Fatal(err)
 	}
 
@@ -516,7 +522,7 @@ func Test_BadUpgrade(t *testing.T) {
 	p.Keys = nil
 	p.MinDecryptionVersion = 0
 
-	if err := p.Upgrade(ctx, storage); err == nil {
+	if err := p.Upgrade(ctx, storage, rand.Reader); err == nil {
 		t.Fatal("expected error")
 	}
 
@@ -533,14 +539,14 @@ func Test_BadUpgrade(t *testing.T) {
 
 func Test_BadArchive(t *testing.T) {
 	ctx := context.Background()
-	lm := NewLockManager(false)
+	lm, _ := NewLockManager(true, 0)
 	storage := &logical.InmemStorage{}
 	p, _, err := lm.GetPolicy(ctx, PolicyRequest{
 		Upsert:  true,
 		Storage: storage,
 		KeyType: KeyType_AES256_GCM96,
 		Name:    "test",
-	})
+	}, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +555,7 @@ func Test_BadArchive(t *testing.T) {
 	}
 
 	for i := 2; i <= 10; i++ {
-		err = p.Rotate(ctx, storage)
+		err = p.Rotate(ctx, storage, rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}

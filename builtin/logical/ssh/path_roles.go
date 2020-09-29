@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
 	"time"
 
 	"github.com/hashicorp/errwrap"
@@ -12,6 +11,7 @@ import (
 	"github.com/hashicorp/vault/sdk/helper/cidrutil"
 	"github.com/hashicorp/vault/sdk/helper/parseutil"
 	"github.com/hashicorp/vault/sdk/logical"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -37,6 +37,7 @@ type sshRole struct {
 	Port                   int               `mapstructure:"port" json:"port"`
 	InstallScript          string            `mapstructure:"install_script" json:"install_script"`
 	AllowedUsers           string            `mapstructure:"allowed_users" json:"allowed_users"`
+	AllowedUsersTemplate   bool              `mapstructure:"allowed_users_template" json:"allowed_users_template"`
 	AllowedDomains         string            `mapstructure:"allowed_domains" json:"allowed_domains"`
 	KeyOptionSpecs         string            `mapstructure:"key_option_specs" json:"key_option_specs"`
 	MaxTTL                 string            `mapstructure:"max_ttl" json:"max_ttl"`
@@ -52,6 +53,7 @@ type sshRole struct {
 	AllowUserKeyIDs        bool              `mapstructure:"allow_user_key_ids" json:"allow_user_key_ids"`
 	KeyIDFormat            string            `mapstructure:"key_id_format" json:"key_id_format"`
 	AllowedUserKeyLengths  map[string]int    `mapstructure:"allowed_user_key_lengths" json:"allowed_user_key_lengths"`
+	AlgorithmSigner        string            `mapstructure:"algorithm_signer" json:"algorithm_signer"`
 }
 
 func pathListRoles(b *backend) *framework.Path {
@@ -69,7 +71,7 @@ func pathListRoles(b *backend) *framework.Path {
 
 func pathRoles(b *backend) *framework.Path {
 	return &framework.Path{
-		Pattern: "roles/" + framework.GenericNameRegex("role"),
+		Pattern: "roles/" + framework.GenericNameWithAtRegex("role"),
 		Fields: map[string]*framework.FieldSchema{
 			"role": &framework.FieldSchema{
 				Type: framework.TypeString,
@@ -93,7 +95,9 @@ func pathRoles(b *backend) *framework.Path {
 				credential is being generated for other users, Vault uses this admin
 				username to login to remote host and install the generated credential
 				for the other user.`,
-				DisplayName: "Admin Username",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "Admin Username",
+				},
 			},
 			"default_user": &framework.FieldSchema{
 				Type: framework.TypeString,
@@ -102,7 +106,9 @@ func pathRoles(b *backend) *framework.Path {
 				Default username for which a credential will be generated.
 				When the endpoint 'creds/' is used without a username, this
 				value will be used as default username.`,
-				DisplayName: "Default Username",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "Default Username",
+				},
 			},
 			"cidr_list": &framework.FieldSchema{
 				Type: framework.TypeString,
@@ -110,7 +116,9 @@ func pathRoles(b *backend) *framework.Path {
 				[Optional for Dynamic type] [Optional for OTP type] [Not applicable for CA type]
 				Comma separated list of CIDR blocks for which the role is applicable for.
 				CIDR blocks can belong to more than one role.`,
-				DisplayName: "CIDR List",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "CIDR List",
+				},
 			},
 			"exclude_cidr_list": &framework.FieldSchema{
 				Type: framework.TypeString,
@@ -119,7 +127,9 @@ func pathRoles(b *backend) *framework.Path {
 				Comma separated list of CIDR blocks. IP addresses belonging to these blocks are not
 				accepted by the role. This is particularly useful when big CIDR blocks are being used
 				by the role and certain parts of it needs to be kept out.`,
-				DisplayName: "Exclude CIDR List",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "Exclude CIDR List",
+				},
 			},
 			"port": &framework.FieldSchema{
 				Type: framework.TypeInt,
@@ -129,7 +139,9 @@ func pathRoles(b *backend) *framework.Path {
 				play any role in creation of OTP. For 'otp' type, this is just a way
 				to inform client about the port number to use. Port number will be
 				returned to client by Vault server along with OTP.`,
-				DisplayValue: 22,
+				DisplayAttrs: &framework.DisplayAttributes{
+					Value: 22,
+				},
 			},
 			"key_type": &framework.FieldSchema{
 				Type: framework.TypeString,
@@ -138,7 +150,9 @@ func pathRoles(b *backend) *framework.Path {
 				Type of key used to login to hosts. It can be either 'otp', 'dynamic' or 'ca'.
 				'otp' type requires agent to be installed in remote hosts.`,
 				AllowedValues: []interface{}{"otp", "dynamic", "ca"},
-				DisplayValue:  "ca",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Value: "ca",
+				},
 			},
 			"key_bits": &framework.FieldSchema{
 				Type: framework.TypeInt,
@@ -170,6 +184,15 @@ func pathRoles(b *backend) *framework.Path {
 				allow any user.
 				`,
 			},
+			"allowed_users_template": &framework.FieldSchema{
+				Type: framework.TypeBool,
+				Description: `
+				[Not applicable for Dynamic type] [Not applicable for OTP type] [Optional for CA type]
+				If set, Allowed users can be specified using identity template policies.
+				Non-templated users are also permitted.
+				`,
+				Default: false,
+			},
 			"allowed_domains": &framework.FieldSchema{
 				Type: framework.TypeString,
 				Description: `
@@ -195,7 +218,9 @@ func pathRoles(b *backend) *framework.Path {
 				requested. The lease duration controls the expiration
 				of certificates issued by this backend. Defaults to
 				the value of max_ttl.`,
-				DisplayName: "TTL",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "TTL",
+				},
 			},
 			"max_ttl": &framework.FieldSchema{
 				Type: framework.TypeDurationSecond,
@@ -203,7 +228,9 @@ func pathRoles(b *backend) *framework.Path {
 				[Not applicable for Dynamic type] [Not applicable for OTP type] [Optional for CA type]
 				The maximum allowed lease duration
 				`,
-				DisplayName: "Max TTL",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "Max TTL",
+				},
 			},
 			"allowed_critical_options": &framework.FieldSchema{
 				Type: framework.TypeString,
@@ -281,7 +308,9 @@ func pathRoles(b *backend) *framework.Path {
 				When false, the key ID will always be the token display name.
 				The key ID is logged by the SSH server and can be useful for auditing.
 				`,
-				DisplayName: "Allow User Key IDs",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "Allow User Key IDs",
+				},
 			},
 			"key_id_format": &framework.FieldSchema{
 				Type: framework.TypeString,
@@ -292,7 +321,9 @@ func pathRoles(b *backend) *framework.Path {
 				the token used to make the request. '{{role_name}}' - The name of the role signing the request.
 				'{{public_key_hash}}' - A SHA256 checksum of the public key that is being signed.
 				`,
-				DisplayName: "Key ID Format",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "Key ID Format",
+				},
 			},
 			"allowed_user_key_lengths": &framework.FieldSchema{
 				Type: framework.TypeMap,
@@ -300,6 +331,16 @@ func pathRoles(b *backend) *framework.Path {
                                 [Not applicable for Dynamic type] [Not applicable for OTP type] [Optional for CA type]
                                 If set, allows the enforcement of key types and minimum key sizes to be signed.
                                 `,
+			},
+			"algorithm_signer": &framework.FieldSchema{
+				Type: framework.TypeString,
+				Description: `
+				When supplied, this value specifies a signing algorithm for the key. Possible values: 
+				ssh-rsa, rsa-sha2-256, rsa-sha2-512.
+				`,
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "Signing Algorithm",
+				},
 			},
 		},
 
@@ -436,7 +477,21 @@ func (b *backend) pathRoleWrite(ctx context.Context, req *logical.Request, d *fr
 			KeyOptionSpecs:  keyOptionSpecs,
 		}
 	} else if keyType == KeyTypeCA {
-		role, errorResponse := b.createCARole(allowedUsers, d.Get("default_user").(string), d)
+		algorithmSigner := ""
+		algorithmSignerRaw, ok := d.GetOk("algorithm_signer")
+		if ok {
+			algorithmSigner = algorithmSignerRaw.(string)
+			switch algorithmSigner {
+			case ssh.SigAlgoRSA, ssh.SigAlgoRSASHA2256, ssh.SigAlgoRSASHA2512:
+			case "":
+				// This case is valid, and the sign operation will use the signer's
+				// default algorithm.
+			default:
+				return nil, fmt.Errorf("unknown algorithm signer %q", algorithmSigner)
+			}
+		}
+
+		role, errorResponse := b.createCARole(allowedUsers, d.Get("default_user").(string), algorithmSigner, d)
 		if errorResponse != nil {
 			return errorResponse, nil
 		}
@@ -456,7 +511,7 @@ func (b *backend) pathRoleWrite(ctx context.Context, req *logical.Request, d *fr
 	return nil, nil
 }
 
-func (b *backend) createCARole(allowedUsers, defaultUser string, data *framework.FieldData) (*sshRole, *logical.Response) {
+func (b *backend) createCARole(allowedUsers, defaultUser, signer string, data *framework.FieldData) (*sshRole, *logical.Response) {
 	ttl := time.Duration(data.Get("ttl").(int)) * time.Second
 	maxTTL := time.Duration(data.Get("max_ttl").(int)) * time.Second
 	role := &sshRole{
@@ -465,6 +520,7 @@ func (b *backend) createCARole(allowedUsers, defaultUser string, data *framework
 		AllowUserCertificates:  data.Get("allow_user_certificates").(bool),
 		AllowHostCertificates:  data.Get("allow_host_certificates").(bool),
 		AllowedUsers:           allowedUsers,
+		AllowedUsersTemplate:   data.Get("allowed_users_template").(bool),
 		AllowedDomains:         data.Get("allowed_domains").(string),
 		DefaultUser:            defaultUser,
 		AllowBareDomains:       data.Get("allow_bare_domains").(bool),
@@ -472,6 +528,7 @@ func (b *backend) createCARole(allowedUsers, defaultUser string, data *framework
 		AllowUserKeyIDs:        data.Get("allow_user_key_ids").(bool),
 		KeyIDFormat:            data.Get("key_id_format").(string),
 		KeyType:                KeyTypeCA,
+		AlgorithmSigner:        signer,
 	}
 
 	if !role.AllowUserCertificates && !role.AllowHostCertificates {
@@ -545,6 +602,7 @@ func (b *backend) parseRole(role *sshRole) (map[string]interface{}, error) {
 
 		result = map[string]interface{}{
 			"allowed_users":            role.AllowedUsers,
+			"allowed_users_template":   role.AllowedUsersTemplate,
 			"allowed_domains":          role.AllowedDomains,
 			"default_user":             role.DefaultUser,
 			"ttl":                      int64(ttl.Seconds()),
@@ -562,6 +620,7 @@ func (b *backend) parseRole(role *sshRole) (map[string]interface{}, error) {
 			"default_critical_options": role.DefaultCriticalOptions,
 			"default_extensions":       role.DefaultExtensions,
 			"allowed_user_key_lengths": role.AllowedUserKeyLengths,
+			"algorithm_signer":         role.AlgorithmSigner,
 		}
 	case KeyTypeDynamic:
 		result = map[string]interface{}{

@@ -2,12 +2,13 @@ package api
 
 import (
 	"bytes"
-	"github.com/hashicorp/vault/sdk/helper/consts"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/hashicorp/vault/sdk/helper/consts"
 )
 
 func init() {
@@ -93,6 +94,37 @@ func TestClientToken(t *testing.T) {
 
 	if v := client.Token(); v != "" {
 		t.Fatalf("bad: %s", v)
+	}
+}
+
+func TestClientHostHeader(t *testing.T) {
+	handler := func(w http.ResponseWriter, req *http.Request) {
+		w.Write([]byte(req.Host))
+	}
+	config, ln := testHTTPServer(t, http.HandlerFunc(handler))
+	defer ln.Close()
+
+	config.Address = strings.ReplaceAll(config.Address, "127.0.0.1", "localhost")
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	// Set the token manually
+	client.SetToken("foo")
+
+	resp, err := client.RawRequest(client.NewRequest("PUT", "/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Copy the response
+	var buf bytes.Buffer
+	io.Copy(&buf, resp.Body)
+
+	// Verify we got the response from the primary
+	if buf.String() != strings.ReplaceAll(config.Address, "http://", "") {
+		t.Fatalf("Bad address: %s", buf.String())
 	}
 }
 
@@ -191,6 +223,22 @@ func TestClientEnvSettings(t *testing.T) {
 	if tlsConfig.GetClientCertificate == nil {
 		t.Fatalf("bad: expected client tls config to have a certificate getter")
 	}
+	if tlsConfig.InsecureSkipVerify != true {
+		t.Fatalf("bad: %v", tlsConfig.InsecureSkipVerify)
+	}
+}
+
+func TestClientDeprecatedEnvSettings(t *testing.T) {
+	oldInsecure := os.Getenv(EnvVaultInsecure)
+	os.Setenv(EnvVaultInsecure, "true")
+	defer os.Setenv(EnvVaultInsecure, oldInsecure)
+
+	config := DefaultConfig()
+	if err := config.ReadEnvironment(); err != nil {
+		t.Fatalf("error reading environment: %v", err)
+	}
+
+	tlsConfig := config.HttpClient.Transport.(*http.Transport).TLSClientConfig
 	if tlsConfig.InsecureSkipVerify != true {
 		t.Fatalf("bad: %v", tlsConfig.InsecureSkipVerify)
 	}
@@ -307,4 +355,53 @@ func TestClone(t *testing.T) {
 	}
 
 	_ = client2
+}
+
+func TestSetHeadersRaceSafe(t *testing.T) {
+	client, err1 := NewClient(nil)
+	if err1 != nil {
+		t.Fatalf("NewClient failed: %v", err1)
+	}
+
+	start := make(chan interface{})
+	done := make(chan interface{})
+
+	testPairs := map[string]string{
+		"soda":    "rootbeer",
+		"veggie":  "carrots",
+		"fruit":   "apples",
+		"color":   "red",
+		"protein": "egg",
+	}
+
+	for key, value := range testPairs {
+		tmpKey := key
+		tmpValue := value
+		go func() {
+			<-start
+			// This test fails if here, you replace client.AddHeader(tmpKey, tmpValue) with:
+			// 	headerCopy := client.Header()
+			// 	headerCopy.AddHeader(tmpKey, tmpValue)
+			// 	client.SetHeader(headerCopy)
+			client.AddHeader(tmpKey, tmpValue)
+			done <- true
+		}()
+	}
+
+	// Start everyone at once.
+	close(start)
+
+	// Wait until everyone is done.
+	for i := 0; i < len(testPairs); i++ {
+		<-done
+	}
+
+	// Check that all the test pairs are in the resulting
+	// headers.
+	resultingHeaders := client.Headers()
+	for key, value := range testPairs {
+		if resultingHeaders.Get(key) != value {
+			t.Fatal("expected " + value + " for " + key)
+		}
+	}
 }

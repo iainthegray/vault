@@ -4,20 +4,21 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/armon/go-metrics"
 	"github.com/hashicorp/errwrap"
+	"github.com/hashicorp/vault/helper/metricsutil"
 	"github.com/hashicorp/vault/helper/namespace"
 	"github.com/hashicorp/vault/sdk/helper/certutil"
 	"github.com/hashicorp/vault/sdk/helper/consts"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/hashicorp/vault/sdk/logical"
-	jose "gopkg.in/square/go-jose.v2"
+	"gopkg.in/square/go-jose.v2"
 	squarejwt "gopkg.in/square/go-jose.v2/jwt"
 )
 
@@ -35,7 +36,7 @@ func (c *Core) ensureWrappingKey(ctx context.Context) error {
 	var keyParams certutil.ClusterKeyParams
 
 	if entry == nil {
-		key, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+		key, err := ecdsa.GenerateKey(elliptic.P521(), c.secureRandomReader)
 		if err != nil {
 			return errwrap.Wrapf("failed to generate wrapping key: {{err}}", err)
 		}
@@ -143,6 +144,25 @@ DONELISTHANDLING:
 		c.logger.Error("failed to create wrapping token", "error", err)
 		return nil, ErrInternalError
 	}
+
+	// Count the successful token creation
+	ttl_label := metricsutil.TTLBucket(resp.WrapInfo.TTL)
+	mountPointWithoutNs := ns.TrimmedPath(req.MountPoint)
+	c.metricSink.IncrCounterWithLabels(
+		[]string{"token", "creation"},
+		1,
+		[]metrics.Label{
+			metricsutil.NamespaceLabel(ns),
+			// The type of the secret engine is not all that useful;
+			// we could use "token" but let's be more descriptive,
+			// even if it's not a real auth method.
+			{"auth_method", "response_wrapping"},
+			{"mount_point", mountPointWithoutNs},
+			{"creation_ttl", ttl_label},
+			// *Should* be service, but let's use whatever create() did..
+			{"token_type", te.Type.String()},
+		},
+	)
 
 	resp.WrapInfo.Token = te.ID
 	resp.WrapInfo.Accessor = te.Accessor
@@ -309,16 +329,57 @@ DONELISTHANDLING:
 	return nil, nil
 }
 
-// ValidateWrappingToken checks whether a token is a wrapping token.
-func (c *Core) ValidateWrappingToken(ctx context.Context, req *logical.Request) (bool, error) {
+// validateWrappingToken checks whether a token is a wrapping token. The passed
+// in logical request will be updated if the wrapping token was provided within
+// a JWT token.
+func (c *Core) ValidateWrappingToken(ctx context.Context, req *logical.Request) (valid bool, err error) {
 	if req == nil {
 		return false, fmt.Errorf("invalid request")
 	}
 
-	var err error
+	if c.Sealed() {
+		return false, consts.ErrSealed
+	}
+
+	c.stateLock.RLock()
+	defer c.stateLock.RUnlock()
+
+	if c.standby && !c.perfStandby {
+		return false, consts.ErrStandby
+	}
+
+	defer func() {
+		// Perform audit logging before returning if there's an issue with checking
+		// the wrapping token
+		if err != nil || !valid {
+			// We log the Auth object like so here since the wrapping token can
+			// come from the header, which gets set as the ClientToken
+			auth := &logical.Auth{
+				ClientToken: req.ClientToken,
+				Accessor:    req.ClientTokenAccessor,
+			}
+
+			logInput := &logical.LogInput{
+				Auth:    auth,
+				Request: req,
+			}
+			if err != nil {
+				logInput.OuterErr = errors.New("error validating wrapping token")
+			}
+			if !valid {
+				logInput.OuterErr = consts.ErrInvalidWrappingToken
+			}
+			if err := c.auditBroker.LogRequest(ctx, logInput, c.auditedHeaders); err != nil {
+				c.logger.Error("failed to audit request", "path", req.Path, "error", err)
+			}
+		}
+	}()
 
 	var token string
 	var thirdParty bool
+
+	// Check if the wrapping token is coming from the request body, and if not
+	// assume that req.ClientToken is the wrapping token
 	if req.Data != nil && req.Data["token"] != nil {
 		thirdParty = true
 		if tokenStr, ok := req.Data["token"].(string); !ok {
@@ -365,21 +426,12 @@ func (c *Core) ValidateWrappingToken(ctx context.Context, req *logical.Request) 
 		} else {
 			req.Data["token"] = claims.ID
 		}
+
 		token = claims.ID
 	}
 
 	if token == "" {
 		return false, fmt.Errorf("token is empty")
-	}
-
-	if c.Sealed() {
-		return false, consts.ErrSealed
-	}
-
-	c.stateLock.RLock()
-	defer c.stateLock.RUnlock()
-	if c.standby && !c.perfStandby {
-		return false, consts.ErrStandby
 	}
 
 	te, err := c.tokenStore.Lookup(ctx, token)

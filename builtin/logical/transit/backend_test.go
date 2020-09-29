@@ -2,6 +2,7 @@ package transit
 
 import (
 	"context"
+	cryptoRand "crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"math/rand"
@@ -26,11 +27,11 @@ const (
 	testPlaintext = "the quick brown fox"
 )
 
-func createBackendWithStorage(t *testing.T) (*backend, logical.Storage) {
+func createBackendWithStorage(t testing.TB) (*backend, logical.Storage) {
 	config := logical.TestBackendConfig()
 	config.StorageView = &logical.InmemStorage{}
 
-	b := Backend(config)
+	b, _ := Backend(context.Background(), config)
 	if b == nil {
 		t.Fatalf("failed to create backend")
 	}
@@ -41,7 +42,7 @@ func createBackendWithStorage(t *testing.T) (*backend, logical.Storage) {
 	return b, config.StorageView
 }
 
-func createBackendWithSysView(t *testing.T) (*backend, logical.Storage) {
+func createBackendWithSysView(t testing.TB) (*backend, logical.Storage) {
 	sysView := logical.TestSystemView()
 	storage := &logical.InmemStorage{}
 
@@ -50,7 +51,7 @@ func createBackendWithSysView(t *testing.T) (*backend, logical.Storage) {
 		System:      sysView,
 	}
 
-	b := Backend(conf)
+	b, _ := Backend(context.Background(), conf)
 	if b == nil {
 		t.Fatal("failed to create backend")
 	}
@@ -63,8 +64,52 @@ func createBackendWithSysView(t *testing.T) (*backend, logical.Storage) {
 	return b, storage
 }
 
+func createBackendWithSysViewWithStorage(t testing.TB, s logical.Storage) *backend {
+	sysView := logical.TestSystemView()
+
+	conf := &logical.BackendConfig{
+		StorageView: s,
+		System:      sysView,
+	}
+
+	b, _ := Backend(context.Background(), conf)
+	if b == nil {
+		t.Fatal("failed to create backend")
+	}
+
+	err := b.Backend.Setup(context.Background(), conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return b
+}
+
+func createBackendWithForceNoCacheWithSysViewWithStorage(t testing.TB, s logical.Storage) *backend {
+	sysView := logical.TestSystemView()
+	sysView.CachingDisabledVal = true
+
+	conf := &logical.BackendConfig{
+		StorageView: s,
+		System:      sysView,
+	}
+
+	b, _ := Backend(context.Background(), conf)
+	if b == nil {
+		t.Fatal("failed to create backend")
+	}
+
+	err := b.Backend.Setup(context.Background(), conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return b
+}
+
 func TestTransit_RSA(t *testing.T) {
 	testTransit_RSA(t, "rsa-2048")
+	testTransit_RSA(t, "rsa-3072")
 	testTransit_RSA(t, "rsa-4096")
 }
 
@@ -879,7 +924,7 @@ func testDerivedKeyUpgrade(t *testing.T, keyType keysutil.KeyType) {
 	}
 
 	p.MigrateKeyToKeysMap()
-	p.Upgrade(context.Background(), storage) // Need to run the upgrade code to make the migration stick
+	p.Upgrade(context.Background(), storage, cryptoRand.Reader) // Need to run the upgrade code to make the migration stick
 
 	if p.KDF != keysutil.Kdf_hmac_sha256_counter {
 		t.Fatalf("bad KDF value by default; counter val is %d, KDF val is %d, policy is %#v", keysutil.Kdf_hmac_sha256_counter, p.KDF, *p)
@@ -925,8 +970,10 @@ func testDerivedKeyUpgrade(t *testing.T, keyType keysutil.KeyType) {
 
 func TestConvergentEncryption(t *testing.T) {
 	testConvergentEncryptionCommon(t, 0, keysutil.KeyType_AES256_GCM96)
+	testConvergentEncryptionCommon(t, 2, keysutil.KeyType_AES128_GCM96)
 	testConvergentEncryptionCommon(t, 2, keysutil.KeyType_AES256_GCM96)
 	testConvergentEncryptionCommon(t, 2, keysutil.KeyType_ChaCha20_Poly1305)
+	testConvergentEncryptionCommon(t, 3, keysutil.KeyType_AES128_GCM96)
 	testConvergentEncryptionCommon(t, 3, keysutil.KeyType_AES256_GCM96)
 	testConvergentEncryptionCommon(t, 3, keysutil.KeyType_ChaCha20_Poly1305)
 }
@@ -1294,16 +1341,17 @@ func testConvergentEncryptionCommon(t *testing.T, ver int, keyType keysutil.KeyT
 func TestPolicyFuzzing(t *testing.T) {
 	var be *backend
 	sysView := logical.TestSystemView()
+	sysView.CachingDisabledVal = true
 	conf := &logical.BackendConfig{
 		System: sysView,
 	}
 
-	be = Backend(conf)
+	be, _ = Backend(context.Background(), conf)
 	be.Setup(context.Background(), conf)
 	testPolicyFuzzingCommon(t, be)
 
 	sysView.CachingDisabledVal = true
-	be = Backend(conf)
+	be, _ = Backend(context.Background(), conf)
 	be.Setup(context.Background(), conf)
 	testPolicyFuzzingCommon(t, be)
 }

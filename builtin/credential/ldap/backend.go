@@ -77,7 +77,7 @@ func (b *backend) Login(ctx context.Context, req *logical.Request, username stri
 		LDAP:   ldaputil.NewLDAP(),
 	}
 
-	c, err := ldapClient.DialLDAP(cfg)
+	c, err := ldapClient.DialLDAP(cfg.ConfigEntry)
 	if err != nil {
 		return nil, logical.ErrorResponse(err.Error()), nil, nil
 	}
@@ -88,12 +88,12 @@ func (b *backend) Login(ctx context.Context, req *logical.Request, username stri
 	// Clean connection
 	defer c.Close()
 
-	userBindDN, err := ldapClient.GetUserBindDN(cfg, c, username)
+	userBindDN, err := ldapClient.GetUserBindDN(cfg.ConfigEntry, c, username)
 	if err != nil {
 		if b.Logger().IsDebug() {
 			b.Logger().Debug("error getting user bind DN", "error", err)
 		}
-		return nil, logical.ErrorResponse("ldap operation failed"), nil, nil
+		return nil, logical.ErrorResponse("ldap operation failed: unable to retrieve user bind DN"), nil, nil
 	}
 
 	if b.Logger().IsDebug() {
@@ -110,7 +110,7 @@ func (b *backend) Login(ctx context.Context, req *logical.Request, username stri
 		if b.Logger().IsDebug() {
 			b.Logger().Debug("ldap bind failed", "error", err)
 		}
-		return nil, logical.ErrorResponse("ldap operation failed"), nil, nil
+		return nil, logical.ErrorResponse("ldap operation failed: failed to bind as user"), nil, nil
 	}
 
 	// We re-bind to the BindDN if it's defined because we assume
@@ -120,19 +120,27 @@ func (b *backend) Login(ctx context.Context, req *logical.Request, username stri
 			if b.Logger().IsDebug() {
 				b.Logger().Debug("error while attempting to re-bind with the BindDN User", "error", err)
 			}
-			return nil, logical.ErrorResponse("ldap operation failed"), nil, nil
+			return nil, logical.ErrorResponse("ldap operation failed: failed to re-bind with the BindDN user"), nil, nil
 		}
 		if b.Logger().IsDebug() {
 			b.Logger().Debug("re-bound to original binddn")
 		}
 	}
 
-	userDN, err := ldapClient.GetUserDN(cfg, c, userBindDN)
+	userDN, err := ldapClient.GetUserDN(cfg.ConfigEntry, c, userBindDN, username)
 	if err != nil {
 		return nil, logical.ErrorResponse(err.Error()), nil, nil
 	}
 
-	ldapGroups, err := ldapClient.GetLdapGroups(cfg, c, userDN, username)
+	if cfg.AnonymousGroupSearch {
+		c, err = ldapClient.DialLDAP(cfg.ConfigEntry)
+		if err != nil {
+			return nil, logical.ErrorResponse("ldap operation failed: failed to connect to LDAP server"), nil, nil
+		}
+		defer c.Close() // Defer closing of this connection as the deferal above closes the other defined connection
+	}
+
+	ldapGroups, err := ldapClient.GetLdapGroups(cfg.ConfigEntry, c, userDN, username)
 	if err != nil {
 		return nil, logical.ErrorResponse(err.Error()), nil, nil
 	}

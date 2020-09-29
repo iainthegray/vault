@@ -11,17 +11,29 @@ export default DS.RESTSerializer.extend({
 
   normalizeSecrets(payload) {
     if (payload.data.keys && Array.isArray(payload.data.keys)) {
-      const secrets = payload.data.keys.map(secret => ({ name: secret }));
+      const secrets = payload.data.keys.map(secret => ({ name: secret, backend: payload.backend }));
       return secrets;
     }
     assign(payload, payload.data);
     delete payload.data;
+    // timestamps for these two are in seconds...
+    if (
+      payload.type === 'aes256-gcm96' ||
+      payload.type === 'chacha20-poly1305' ||
+      payload.type === 'aes128-gcm96'
+    ) {
+      for (let version in payload.keys) {
+        payload.keys[version] = payload.keys[version] * 1000;
+      }
+    }
     return [payload];
   },
 
   normalizeResponse(store, primaryModelClass, payload, id, requestType) {
     const nullResponses = ['updateRecord', 'createRecord', 'deleteRecord'];
-    const secrets = nullResponses.includes(requestType) ? { name: id } : this.normalizeSecrets(payload);
+    const secrets = nullResponses.includes(requestType)
+      ? { name: id, backend: payload.backend }
+      : this.normalizeSecrets(payload);
     const { modelName } = primaryModelClass;
     let transformedPayload = { [modelName]: secrets };
     // just return the single object because ember is picky

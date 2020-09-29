@@ -95,7 +95,7 @@ export default Component.extend(FocusOnInsertMixin, WithNavToNearestAncestor, {
   updatePath: maybeQueryRecord(
     'capabilities',
     context => {
-      if (context.mode === 'create') {
+      if (!context.model || context.mode === 'create') {
         return;
       }
       let backend = context.isV2 ? context.get('model.engine.id') : context.model.backend;
@@ -116,7 +116,7 @@ export default Component.extend(FocusOnInsertMixin, WithNavToNearestAncestor, {
   v2UpdatePath: maybeQueryRecord(
     'capabilities',
     context => {
-      if (context.mode === 'create' || context.isV2 === false) {
+      if (!context.model || context.mode === 'create' || context.isV2 === false) {
         return;
       }
       let backend = context.get('model.engine.id');
@@ -137,7 +137,9 @@ export default Component.extend(FocusOnInsertMixin, WithNavToNearestAncestor, {
   buttonDisabled: or('requestInFlight', 'model.isFolder', 'model.flagsIsInvalid', 'hasLintError', 'error'),
 
   modelForData: computed('isV2', 'model', function() {
-    return this.isV2 ? this.model.belongsTo('selectedVersion').value() : this.model;
+    let { model } = this;
+    if (!model) return null;
+    return this.isV2 ? model.belongsTo('selectedVersion').value() : model;
   }),
 
   basicModeDisabled: computed('secretDataIsAdvanced', 'showAdvancedMode', function() {
@@ -156,21 +158,18 @@ export default Component.extend(FocusOnInsertMixin, WithNavToNearestAncestor, {
     return this.secretDataIsAdvanced || this.preferAdvancedEdit;
   }),
 
-  isWriteWithoutRead: computed(
-    'model.{failedServerRead,selectedVersion.failedServerRead}',
-    'isV2',
-    function() {
-      // if the version couldn't be read from the server
-      if (this.isV2 && this.model.selectedVersion.failedServerRead) {
-        return true;
-      }
-      // if the model couldn't be read from the server
-      if (!this.isV2 && this.model.failedServerRead) {
-        return true;
-      }
-      return false;
+  isWriteWithoutRead: computed('model.failedServerRead', 'modelForData.failedServerRead', 'isV2', function() {
+    if (!this.model) return;
+    // if the version couldn't be read from the server
+    if (this.isV2 && this.modelForData.failedServerRead) {
+      return true;
     }
-  ),
+    // if the model couldn't be read from the server
+    if (!this.isV2 && this.model.failedServerRead) {
+      return true;
+    }
+    return false;
+  }),
 
   transitionToRoute() {
     return this.router.transitionTo(...arguments);
@@ -263,7 +262,7 @@ export default Component.extend(FocusOnInsertMixin, WithNavToNearestAncestor, {
             this.flashMessages.success('Secret Successfully Wrapped!');
           })
           .catch(() => {
-            this.flashMessages.error('Could Not Wrap Secret');
+            this.flashMessages.danger('Could Not Wrap Secret');
           })
           .finally(() => {
             this.set('isWrapping', false);
@@ -277,7 +276,7 @@ export default Component.extend(FocusOnInsertMixin, WithNavToNearestAncestor, {
             this.flashMessages.success('Secret Successfully Wrapped!');
           })
           .catch(() => {
-            this.flashMessages.error('Could Not Wrap Secret');
+            this.flashMessages.danger('Could Not Wrap Secret');
           })
           .finally(() => {
             this.set('isWrapping', false);
@@ -295,21 +294,28 @@ export default Component.extend(FocusOnInsertMixin, WithNavToNearestAncestor, {
     },
 
     handleCopyError() {
-      this.flashMessages.error('Could Not Copy Wrapped Data');
+      this.flashMessages.danger('Could Not Copy Wrapped Data');
       this.send('clearWrappedData');
     },
 
     createOrUpdateKey(type, event) {
       event.preventDefault();
+      const MAXIMUM_VERSIONS = 9999999999999999;
       let model = this.modelForData;
+      let secret = this.model;
       // prevent from submitting if there's no key
-      // maybe do something fancier later
-      if (type === 'create' && isBlank(model.get('path') || model.id)) {
+      if (type === 'create' && isBlank(model.path || model.id)) {
+        this.flashMessages.danger('Please provide a path for the secret');
+        return;
+      }
+      const maxVersions = secret.get('maxVersions');
+      if (MAXIMUM_VERSIONS < maxVersions) {
+        this.flashMessages.danger('Max versions is too large');
         return;
       }
 
       this.persistKey(() => {
-        this.transitionToRoute(SHOW_ROUTE, this.model.id);
+        this.transitionToRoute(SHOW_ROUTE, this.model.path || this.model.id);
       });
     },
 

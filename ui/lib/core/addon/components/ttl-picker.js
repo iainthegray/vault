@@ -9,7 +9,11 @@ const ERROR_MESSAGE = 'TTLs must be specified in whole number increments, please
 
 /**
  * @module TtlPicker
- * `TtlPicker` components are used to expand and collapse content with a toggle.
+ * `TtlPicker` components are used to set the 'time to live'.
+ * This version is being deprecated and replaced by `TtlPicker2` which is an automatic-width version that
+ * automatically recalculates the time value when unit is updated unless time has been changed recently.
+ * Once all instances of TtlPicker are replaced with TtlPicker2, this component will be removed and
+ * TtlPicker2 will be renamed to TtlPicker.
  *
  * @example
  * ```js
@@ -102,18 +106,17 @@ export default Component.extend({
   },
 
   actions: {
-    changedValue(key, event) {
-      let { type, value, checked } = event.target;
-      let val = type === 'checkbox' ? checked : value;
-      if (val && key === 'time') {
-        val = parseInt(val, 10);
-        if (Number.isNaN(val)) {
+    changedValue(key, value) {
+      if (value && key === 'time') {
+        value = parseInt(value, 10);
+        if (Number.isNaN(value)) {
           this.set('errorMessage', ERROR_MESSAGE);
           return;
         }
       }
       this.set('errorMessage', null);
-      set(this, key, val);
+
+      set(this, key, value);
       this.onChange(this.TTL);
     },
   },

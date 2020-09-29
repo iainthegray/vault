@@ -473,7 +473,7 @@ func (c *Core) newAuditBackend(ctx context.Context, entry *MountEntry, view logi
 			}
 		}
 
-		c.reloadFuncs[key] = append(c.reloadFuncs[key], func(map[string]interface{}) error {
+		c.reloadFuncs[key] = append(c.reloadFuncs[key], func() error {
 			if auditLogger.IsInfo() {
 				auditLogger.Info("reloading file audit backend", "path", entry.Path)
 			}
@@ -504,4 +504,41 @@ func defaultAuditTable() *MountTable {
 		Type: auditTableType,
 	}
 	return table
+}
+
+type AuditLogger interface {
+	AuditRequest(ctx context.Context, input *logical.LogInput) error
+	AuditResponse(ctx context.Context, input *logical.LogInput) error
+}
+
+type basicAuditor struct {
+	c *Core
+}
+
+func (b *basicAuditor) AuditRequest(ctx context.Context, input *logical.LogInput) error {
+	return b.c.auditBroker.LogRequest(ctx, input, b.c.auditedHeaders)
+}
+
+func (b *basicAuditor) AuditResponse(ctx context.Context, input *logical.LogInput) error {
+	return b.c.auditBroker.LogResponse(ctx, input, b.c.auditedHeaders)
+}
+
+type genericAuditor struct {
+	c         *Core
+	mountType string
+	namespace *namespace.Namespace
+}
+
+func (g genericAuditor) AuditRequest(ctx context.Context, input *logical.LogInput) error {
+	ctx = namespace.ContextWithNamespace(ctx, g.namespace)
+	logInput := *input
+	logInput.Type = g.mountType + "-request"
+	return g.c.auditBroker.LogRequest(ctx, &logInput, g.c.auditedHeaders)
+}
+
+func (g genericAuditor) AuditResponse(ctx context.Context, input *logical.LogInput) error {
+	ctx = namespace.ContextWithNamespace(ctx, g.namespace)
+	logInput := *input
+	logInput.Type = g.mountType + "-response"
+	return g.c.auditBroker.LogResponse(ctx, &logInput, g.c.auditedHeaders)
 }

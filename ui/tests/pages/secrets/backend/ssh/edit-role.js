@@ -11,16 +11,11 @@ export default create({
   name: fillable('[data-test-input="name"]'),
   CIDR: fillable('[data-test-input="cidrList"]'),
   save: clickable('[data-test-role-ssh-create]'),
-  deleteBtn: clickable('[data-test-confirm-action-trigger]'),
-  confirmBtn: clickable('[data-test-confirm-button]'),
-  deleteRole() {
-    return this.deleteBtn().confirmBtn();
-  },
 
   async createOTPRole(name) {
+    await this.name(name);
     await this.toggleMore()
       .keyType('otp')
-      .name(name)
       .defaultUser('admin')
       .CIDR('0.0.0.0/0')
       .save();

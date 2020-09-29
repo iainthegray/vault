@@ -17,7 +17,7 @@ export default Component.extend({
   store: service(),
   namespace: null,
   listCapability: null,
-  canList: alias('listCapability.canList'),
+  canList: false,
 
   init() {
     this._super(...arguments);
@@ -38,14 +38,13 @@ export default Component.extend({
 
   fetchListCapability: task(function*() {
     try {
-      if (this.listCapability) {
-        yield this.listCapability.reload();
-        return;
-      }
       let capability = yield this.store.findRecord('capabilities', 'sys/namespaces/');
       this.set('listCapability', capability);
+      this.set('canList', true);
     } catch (e) {
-      //do nothing here
+      // If error out on findRecord call it's because you don't have permissions
+      // and therefor don't have permission to manage namespaces
+      this.set('canList', false);
     }
   }),
   setForAnimation: task(function*() {
@@ -126,7 +125,8 @@ export default Component.extend({
   // gets set as  'lastMenuLeaves' in the ember concurrency task above
   menuLeaves: computed('namespacePath', 'namespaceTree', function() {
     let ns = this.get('namespacePath');
-    let leaves = ancestorKeysForKey(ns) || [];
+    ns = ns.replace(/^\//, '');
+    let leaves = ancestorKeysForKey(ns);
     leaves.push(ns);
     leaves = this.maybeAddRoot(leaves);
 
@@ -156,4 +156,10 @@ export default Component.extend({
     let parts = namespace.split('/');
     return parts[parts.length - 1];
   }),
+
+  actions: {
+    refreshNamespaceList() {
+      this.get('namespaceService.findNamespacesForUser').perform();
+    },
+  },
 });

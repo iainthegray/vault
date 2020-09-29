@@ -107,14 +107,15 @@ module('Integration | Component | form field', function(hooks) {
   test('it renders: editType ttl', async function(assert) {
     let [model, spy] = await setup.call(this, createAttr('foo', null, { editType: 'ttl' }));
     assert.ok(component.hasTTLPicker, 'renders the ttl-picker component');
-    await component.fields.objectAt(0).input('3');
+    await component.fields.objectAt(0).toggleTtl();
     await component.fields
       .objectAt(0)
       .select('h')
       .change();
-
-    assert.equal(model.get('foo'), '3h');
-    assert.ok(spy.calledWith('foo', '3h'), 'onChange called with correct args');
+    await component.fields.objectAt(0).ttlTime('3');
+    const expectedSeconds = `${3 * 3600}s`;
+    assert.equal(model.get('foo'), expectedSeconds);
+    assert.ok(spy.calledWith('foo', expectedSeconds), 'onChange called with correct args');
   });
 
   test('it renders: editType stringArray', async function(assert) {
@@ -123,7 +124,7 @@ module('Integration | Component | form field', function(hooks) {
 
     await component.fields
       .objectAt(0)
-      .input('array')
+      .textarea('array')
       .change();
     assert.deepEqual(model.get('foo'), ['array'], 'sets the value on the model');
     assert.deepEqual(spy.args[0], ['foo', ['array']], 'onChange called with correct args');

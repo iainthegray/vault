@@ -1,7 +1,9 @@
 package credsutil
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/vault/sdk/database/dbplugin"
@@ -13,10 +15,19 @@ const (
 
 // SQLCredentialsProducer implements CredentialsProducer and provides a generic credentials producer for most sql database types.
 type SQLCredentialsProducer struct {
-	DisplayNameLen int
-	RoleNameLen    int
-	UsernameLen    int
-	Separator      string
+	DisplayNameLen    int
+	RoleNameLen       int
+	UsernameLen       int
+	Separator         string
+	LowercaseUsername bool
+}
+
+func (scp *SQLCredentialsProducer) GenerateCredentials(ctx context.Context) (string, error) {
+	password, err := scp.GeneratePassword()
+	if err != nil {
+		return "", err
+	}
+	return password, nil
 }
 
 func (scp *SQLCredentialsProducer) GenerateUsername(config dbplugin.UsernameConfig) (string, error) {
@@ -53,6 +64,10 @@ func (scp *SQLCredentialsProducer) GenerateUsername(config dbplugin.UsernameConf
 	username = fmt.Sprintf("%s%s%s", username, scp.Separator, fmt.Sprint(time.Now().Unix()))
 	if scp.UsernameLen > 0 && len(username) > scp.UsernameLen {
 		username = username[:scp.UsernameLen]
+	}
+
+	if scp.LowercaseUsername {
+		username = strings.ToLower(username)
 	}
 
 	return username, nil

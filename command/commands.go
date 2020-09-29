@@ -25,8 +25,11 @@ import (
 
 	credAliCloud "github.com/hashicorp/vault-plugin-auth-alicloud"
 	credCentrify "github.com/hashicorp/vault-plugin-auth-centrify"
+	credCF "github.com/hashicorp/vault-plugin-auth-cf"
 	credGcp "github.com/hashicorp/vault-plugin-auth-gcp/plugin"
 	credOIDC "github.com/hashicorp/vault-plugin-auth-jwt"
+	credKerb "github.com/hashicorp/vault-plugin-auth-kerberos"
+	credOCI "github.com/hashicorp/vault-plugin-auth-oci"
 	credAws "github.com/hashicorp/vault/builtin/credential/aws"
 	credCert "github.com/hashicorp/vault/builtin/credential/cert"
 	credGitHub "github.com/hashicorp/vault/builtin/credential/github"
@@ -51,13 +54,19 @@ import (
 	physManta "github.com/hashicorp/vault/physical/manta"
 	physMSSQL "github.com/hashicorp/vault/physical/mssql"
 	physMySQL "github.com/hashicorp/vault/physical/mysql"
+	physOCI "github.com/hashicorp/vault/physical/oci"
 	physPostgreSQL "github.com/hashicorp/vault/physical/postgresql"
+	physRaft "github.com/hashicorp/vault/physical/raft"
 	physS3 "github.com/hashicorp/vault/physical/s3"
 	physSpanner "github.com/hashicorp/vault/physical/spanner"
 	physSwift "github.com/hashicorp/vault/physical/swift"
 	physZooKeeper "github.com/hashicorp/vault/physical/zookeeper"
 	physFile "github.com/hashicorp/vault/sdk/physical/file"
 	physInmem "github.com/hashicorp/vault/sdk/physical/inmem"
+
+	sr "github.com/hashicorp/vault/serviceregistration"
+	csr "github.com/hashicorp/vault/serviceregistration/consul"
+	ksr "github.com/hashicorp/vault/serviceregistration/kubernetes"
 )
 
 const (
@@ -84,6 +93,9 @@ const (
 	// flagNameTLSSkipVerify is the flag used in the base command to read in
 	// the option to ignore TLS certificate verification.
 	flagNameTLSSkipVerify = "tls-skip-verify"
+	// flagTLSServerName is the flag used in the base command to read in
+	// the TLS server name.
+	flagTLSServerName = "tls-server-name"
 	// flagNameAuditNonHMACRequestKeys is the flag name used for auth/secrets enable
 	flagNameAuditNonHMACRequestKeys = "audit-non-hmac-request-keys"
 	// flagNameAuditNonHMACResponseKeys is the flag name used for auth/secrets enable
@@ -140,11 +152,18 @@ var (
 		"manta":                  physManta.NewMantaBackend,
 		"mssql":                  physMSSQL.NewMSSQLBackend,
 		"mysql":                  physMySQL.NewMySQLBackend,
+		"oci":                    physOCI.NewBackend,
 		"postgresql":             physPostgreSQL.NewPostgreSQLBackend,
 		"s3":                     physS3.NewS3Backend,
 		"spanner":                physSpanner.NewBackend,
 		"swift":                  physSwift.NewSwiftBackend,
+		"raft":                   physRaft.NewRaftBackend,
 		"zookeeper":              physZooKeeper.NewZooKeeperBackend,
+	}
+
+	serviceRegistrations = map[string]sr.Factory{
+		"consul":     csr.NewServiceRegistration,
+		"kubernetes": ksr.NewServiceRegistration,
 	}
 )
 
@@ -157,11 +176,15 @@ func initCommands(ui, serverCmdUi cli.Ui, runOpts *RunOptions) {
 		"aws":      &credAws.CLIHandler{},
 		"centrify": &credCentrify.CLIHandler{},
 		"cert":     &credCert.CLIHandler{},
+		"cf":       &credCF.CLIHandler{},
 		"gcp":      &credGcp.CLIHandler{},
 		"github":   &credGitHub.CLIHandler{},
+		"kerberos": &credKerb.CLIHandler{},
 		"ldap":     &credLdap.CLIHandler{},
+		"oci":      &credOCI.CLIHandler{},
 		"oidc":     &credOIDC.CLIHandler{},
 		"okta":     &credOkta.CLIHandler{},
+		"pcf":      &credCF.CLIHandler{}, // Deprecated.
 		"radius": &credUserpass.CLIHandler{
 			DefaultMount: "radius",
 		},
@@ -238,6 +261,12 @@ func initCommands(ui, serverCmdUi cli.Ui, runOpts *RunOptions) {
 		"auth list": func() (cli.Command, error) {
 			return &AuthListCommand{
 				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"debug": func() (cli.Command, error) {
+			return &DebugCommand{
+				BaseCommand: getBaseCommand(),
+				ShutdownCh:  MakeShutdownCh(),
 			}, nil
 		},
 		"delete": func() (cli.Command, error) {
@@ -323,6 +352,41 @@ func initCommands(ui, serverCmdUi cli.Ui, runOpts *RunOptions) {
 				ShutdownCh:       MakeShutdownCh(),
 			}, nil
 		},
+		"operator raft": func() (cli.Command, error) {
+			return &OperatorRaftCommand{
+				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"operator raft list-peers": func() (cli.Command, error) {
+			return &OperatorRaftListPeersCommand{
+				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"operator raft join": func() (cli.Command, error) {
+			return &OperatorRaftJoinCommand{
+				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"operator raft remove-peer": func() (cli.Command, error) {
+			return &OperatorRaftRemovePeerCommand{
+				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"operator raft snapshot": func() (cli.Command, error) {
+			return &OperatorRaftSnapshotCommand{
+				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"operator raft snapshot restore": func() (cli.Command, error) {
+			return &OperatorRaftSnapshotRestoreCommand{
+				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"operator raft snapshot save": func() (cli.Command, error) {
+			return &OperatorRaftSnapshotSaveCommand{
+				BaseCommand: getBaseCommand(),
+			}, nil
+		},
 		"operator rekey": func() (cli.Command, error) {
 			return &OperatorRekeyCommand{
 				BaseCommand: getBaseCommand(),
@@ -375,6 +439,16 @@ func initCommands(ui, serverCmdUi cli.Ui, runOpts *RunOptions) {
 		},
 		"plugin register": func() (cli.Command, error) {
 			return &PluginRegisterCommand{
+				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"plugin reload": func() (cli.Command, error) {
+			return &PluginReloadCommand{
+				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"plugin reload-status": func() (cli.Command, error) {
+			return &PluginReloadStatusCommand{
 				BaseCommand: getBaseCommand(),
 			}, nil
 		},
@@ -464,9 +538,12 @@ func initCommands(ui, serverCmdUi cli.Ui, runOpts *RunOptions) {
 				CredentialBackends: credentialBackends,
 				LogicalBackends:    logicalBackends,
 				PhysicalBackends:   physicalBackends,
-				ShutdownCh:         MakeShutdownCh(),
-				SighupCh:           MakeSighupCh(),
-				SigUSR2Ch:          MakeSigUSR2Ch(),
+
+				ServiceRegistrations: serviceRegistrations,
+
+				ShutdownCh: MakeShutdownCh(),
+				SighupCh:   MakeSighupCh(),
+				SigUSR2Ch:  MakeSigUSR2Ch(),
 			}, nil
 		},
 		"ssh": func() (cli.Command, error) {
@@ -593,6 +670,12 @@ func initCommands(ui, serverCmdUi cli.Ui, runOpts *RunOptions) {
 		"kv metadata delete": func() (cli.Command, error) {
 			return &KVMetadataDeleteCommand{
 				BaseCommand: getBaseCommand(),
+			}, nil
+		},
+		"monitor": func() (cli.Command, error) {
+			return &MonitorCommand{
+				BaseCommand: getBaseCommand(),
+				ShutdownCh:  MakeShutdownCh(),
 			}, nil
 		},
 	}

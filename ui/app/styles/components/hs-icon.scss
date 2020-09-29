@@ -5,7 +5,7 @@
   align-items: flex-start;
   vertical-align: middle;
   width: 16px;
-  min-width: fit-content;
+  height: 16px;
   margin: 2px 4px;
 }
 
@@ -22,16 +22,24 @@
 
 .hs-icon-s {
   width: 12px;
+  height: 12px;
 }
 
 .hs-icon-l {
   width: 20px;
+  height: 20px;
 }
 
+.hs-icon-xlm {
+  width: 24px;
+  height: 24px;
+}
 .hs-icon-xl {
   width: 28px;
+  height: 28px;
 }
 
 .hs-icon-xxl {
   width: 32px;
+  height: 32px;
 }

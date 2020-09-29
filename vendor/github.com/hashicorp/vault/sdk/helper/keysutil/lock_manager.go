@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,21 +56,44 @@ type PolicyRequest struct {
 
 type LockManager struct {
 	useCache bool
-	// If caching is enabled, the map of name to in-memory policy cache
-	cache sync.Map
-
+	cache    Cache
 	keyLocks []*locksutil.LockEntry
 }
 
-func NewLockManager(cacheDisabled bool) *LockManager {
+func NewLockManager(useCache bool, cacheSize int) (*LockManager, error) {
+	// determine the type of cache to create
+	var cache Cache
+	switch {
+	case !useCache:
+	case cacheSize < 0:
+		return nil, errors.New("cache size must be greater or equal to zero")
+	case cacheSize == 0:
+		cache = NewTransitSyncMap()
+	case cacheSize > 0:
+		newLRUCache, err := NewTransitLRU(cacheSize)
+		if err != nil {
+			return nil, errwrap.Wrapf("failed to create cache: {{err}}", err)
+		}
+		cache = newLRUCache
+	}
+
 	lm := &LockManager{
-		useCache: !cacheDisabled,
+		useCache: useCache,
+		cache:    cache,
 		keyLocks: locksutil.CreateLocks(),
 	}
-	return lm
+
+	return lm, nil
 }
 
-func (lm *LockManager) CacheActive() bool {
+func (lm *LockManager) GetCacheSize() int {
+	if !lm.useCache {
+		return 0
+	}
+	return lm.cache.Size()
+}
+
+func (lm *LockManager) GetUseCache() bool {
 	return lm.useCache
 }
 
@@ -178,7 +202,6 @@ func (lm *LockManager) RestorePolicy(ctx context.Context, storage logical.Storag
 	if lm.useCache {
 		lm.cache.Store(name, keyData.Policy)
 	}
-
 	return nil
 }
 
@@ -186,7 +209,7 @@ func (lm *LockManager) BackupPolicy(ctx context.Context, storage logical.Storage
 	var p *Policy
 	var err error
 
-	// Backup writes information about when the bacup took place, so we get an
+	// Backup writes information about when the backup took place, so we get an
 	// exclusive lock here
 	lock := locksutil.LockForKey(lm.keyLocks, name)
 	lock.Lock()
@@ -227,7 +250,7 @@ func (lm *LockManager) BackupPolicy(ctx context.Context, storage logical.Storage
 
 // When the function returns, if caching was disabled, the Policy's lock must
 // be unlocked when the caller is done (and it should not be re-locked).
-func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest) (retP *Policy, retUpserted bool, retErr error) {
+func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest, rand io.Reader) (retP *Policy, retUpserted bool, retErr error) {
 	var p *Policy
 	var err error
 	var ok bool
@@ -305,13 +328,13 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest) (retP *
 		// because we don't know if the parameters match.
 
 		switch req.KeyType {
-		case KeyType_AES256_GCM96, KeyType_ChaCha20_Poly1305:
+		case KeyType_AES128_GCM96, KeyType_AES256_GCM96, KeyType_ChaCha20_Poly1305:
 			if req.Convergent && !req.Derived {
 				cleanup()
 				return nil, false, fmt.Errorf("convergent encryption requires derivation to be enabled")
 			}
 
-		case KeyType_ECDSA_P256:
+		case KeyType_ECDSA_P256, KeyType_ECDSA_P384, KeyType_ECDSA_P521:
 			if req.Derived || req.Convergent {
 				cleanup()
 				return nil, false, fmt.Errorf("key derivation and convergent encryption not supported for keys of type %v", req.KeyType)
@@ -323,7 +346,7 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest) (retP *
 				return nil, false, fmt.Errorf("convergent encryption not supported for keys of type %v", req.KeyType)
 			}
 
-		case KeyType_RSA2048, KeyType_RSA4096:
+		case KeyType_RSA2048, KeyType_RSA3072, KeyType_RSA4096:
 			if req.Derived || req.Convergent {
 				cleanup()
 				return nil, false, fmt.Errorf("key derivation and convergent encryption not supported for keys of type %v", req.KeyType)
@@ -357,7 +380,7 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest) (retP *
 		}
 
 		// Performs the actual persist and does setup
-		err = p.Rotate(ctx, req.Storage)
+		err = p.Rotate(ctx, req.Storage, rand)
 		if err != nil {
 			cleanup()
 			return nil, false, err
@@ -378,7 +401,7 @@ func (lm *LockManager) GetPolicy(ctx context.Context, req PolicyRequest) (retP *
 	}
 
 	if p.NeedsUpgrade() {
-		if err := p.Upgrade(ctx, req.Storage); err != nil {
+		if err := p.Upgrade(ctx, req.Storage, rand); err != nil {
 			cleanup()
 			return nil, false, err
 		}

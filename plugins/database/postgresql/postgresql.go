@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,7 +30,22 @@ ALTER ROLE "{{username}}" WITH PASSWORD '{{password}}';
 `
 )
 
-var _ dbplugin.Database = &PostgreSQL{}
+var (
+	_ dbplugin.Database = &PostgreSQL{}
+
+	// postgresEndStatement is basically the word "END" but
+	// surrounded by a word boundary to differentiate it from
+	// other words like "APPEND".
+	postgresEndStatement = regexp.MustCompile(`\bEND\b`)
+
+	// doubleQuotedPhrases finds substrings like "hello"
+	// and pulls them out with the quotes included.
+	doubleQuotedPhrases = regexp.MustCompile(`(".*?")`)
+
+	// singleQuotedPhrases finds substrings like 'hello'
+	// and pulls them out with the quotes included.
+	singleQuotedPhrases = regexp.MustCompile(`('.*?')`)
+)
 
 // New implements builtinplugins.BuiltinFactory
 func New() (interface{}, error) {
@@ -88,6 +104,80 @@ func (p *PostgreSQL) getConnection(ctx context.Context) (*sql.DB, error) {
 	return db.(*sql.DB), nil
 }
 
+// SetCredentials uses provided information to set/create a user in the
+// database. Unlike CreateUser, this method requires a username be provided and
+// uses the name given, instead of generating a name. This is used for creating
+// and setting the password of static accounts, as well as rolling back
+// passwords in the database in the event an updated database fails to save in
+// Vault's storage.
+func (p *PostgreSQL) SetCredentials(ctx context.Context, statements dbplugin.Statements, staticUser dbplugin.StaticUserConfig) (username, password string, err error) {
+	if len(statements.Rotation) == 0 {
+		statements.Rotation = []string{defaultPostgresRotateRootCredentialsSQL}
+	}
+
+	username = staticUser.Username
+	password = staticUser.Password
+	if username == "" || password == "" {
+		return "", "", errors.New("must provide both username and password")
+	}
+
+	// Grab the lock
+	p.Lock()
+	defer p.Unlock()
+
+	// Get the connection
+	db, err := p.getConnection(ctx)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Check if the role exists
+	var exists bool
+	err = db.QueryRowContext(ctx, "SELECT exists (SELECT rolname FROM pg_roles WHERE rolname=$1);", username).Scan(&exists)
+	if err != nil && err != sql.ErrNoRows {
+		return "", "", err
+	}
+
+	// Vault requires the database user already exist, and that the credentials
+	// used to execute the rotation statements has sufficient privileges.
+	stmts := statements.Rotation
+
+	// Start a transaction
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	// Execute each query
+	for _, stmt := range stmts {
+		for _, query := range strutil.ParseArbitraryStringSlice(stmt, ";") {
+			query = strings.TrimSpace(query)
+			if len(query) == 0 {
+				continue
+			}
+
+			m := map[string]string{
+				"name":     staticUser.Username,
+				"username": staticUser.Username,
+				"password": password,
+			}
+			if err := dbtxn.ExecuteTxQuery(ctx, tx, m, query); err != nil {
+				return "", "", err
+			}
+		}
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return "", "", err
+	}
+
+	return username, password, nil
+}
+
 func (p *PostgreSQL) CreateUser(ctx context.Context, statements dbplugin.Statements, usernameConfig dbplugin.UsernameConfig, expiration time.Time) (username string, password string, err error) {
 	statements = dbutil.StatementCompatibilityHelper(statements)
 
@@ -129,10 +219,23 @@ func (p *PostgreSQL) CreateUser(ctx context.Context, statements dbplugin.Stateme
 	defer func() {
 		tx.Rollback()
 	}()
-	// Return the secret
 
 	// Execute each query
 	for _, stmt := range statements.Creation {
+		if containsMultilineStatement(stmt) {
+			// Execute it as-is.
+			m := map[string]string{
+				"name":       username,
+				"username":   username,
+				"password":   password,
+				"expiration": expirationStr,
+			}
+			if err := dbtxn.ExecuteTxQuery(ctx, tx, m, stmt); err != nil {
+				return "", "", err
+			}
+			continue
+		}
+		// Otherwise, it's fine to split the statements on the semicolon.
 		for _, query := range strutil.ParseArbitraryStringSlice(stmt, ";") {
 			query = strings.TrimSpace(query)
 			if len(query) == 0 {
@@ -141,6 +244,7 @@ func (p *PostgreSQL) CreateUser(ctx context.Context, statements dbplugin.Stateme
 
 			m := map[string]string{
 				"name":       username,
+				"username":   username,
 				"password":   password,
 				"expiration": expirationStr,
 			}
@@ -196,6 +300,7 @@ func (p *PostgreSQL) RenewUser(ctx context.Context, statements dbplugin.Statemen
 
 			m := map[string]string{
 				"name":       username,
+				"username":   username,
 				"expiration": expirationStr,
 			}
 			if err := dbtxn.ExecuteTxQuery(ctx, tx, m, query); err != nil {
@@ -243,7 +348,8 @@ func (p *PostgreSQL) customRevokeUser(ctx context.Context, username string, revo
 			}
 
 			m := map[string]string{
-				"name": username,
+				"name":     username,
+				"username": username,
 			}
 			if err := dbtxn.ExecuteTxQuery(ctx, tx, m, query); err != nil {
 				return err
@@ -267,7 +373,7 @@ func (p *PostgreSQL) defaultRevokeUser(ctx context.Context, username string) err
 		return err
 	}
 
-	if exists == false {
+	if !exists {
 		return nil
 	}
 
@@ -373,9 +479,9 @@ func (p *PostgreSQL) RotateRootCredentials(ctx context.Context, statements []str
 		return nil, errors.New("username and password are required to rotate")
 	}
 
-	rotateStatents := statements
-	if len(rotateStatents) == 0 {
-		rotateStatents = []string{defaultPostgresRotateRootCredentialsSQL}
+	rotateStatements := statements
+	if len(rotateStatements) == 0 {
+		rotateStatements = []string{defaultPostgresRotateRootCredentialsSQL}
 	}
 
 	db, err := p.getConnection(ctx)
@@ -396,13 +502,14 @@ func (p *PostgreSQL) RotateRootCredentials(ctx context.Context, statements []str
 		return nil, err
 	}
 
-	for _, stmt := range rotateStatents {
+	for _, stmt := range rotateStatements {
 		for _, query := range strutil.ParseArbitraryStringSlice(stmt, ";") {
 			query = strings.TrimSpace(query)
 			if len(query) == 0 {
 				continue
 			}
 			m := map[string]string{
+				"name":     p.Username,
 				"username": p.Username,
 				"password": password,
 			}
@@ -423,4 +530,41 @@ func (p *PostgreSQL) RotateRootCredentials(ctx context.Context, statements []str
 
 	p.RawConfig["password"] = password
 	return p.RawConfig, nil
+}
+
+// containsMultilineStatement is a best effort to determine whether
+// a particular statement is multiline, and therefore should not be
+// split upon semicolons. If it's unsure, it defaults to false.
+func containsMultilineStatement(stmt string) bool {
+	// We're going to look for the word "END", but first let's ignore
+	// anything the user provided within single or double quotes since
+	// we're looking for an "END" within the Postgres syntax.
+	literals, err := extractQuotedStrings(stmt)
+	if err != nil {
+		return false
+	}
+	stmtWithoutLiterals := stmt
+	for _, literal := range literals {
+		stmtWithoutLiterals = strings.Replace(stmt, literal, "", -1)
+	}
+	// Now look for the word "END" specifically. This will miss any
+	// representations of END that aren't surrounded by spaces, but
+	// it should be easy to change on the user's side.
+	return postgresEndStatement.MatchString(stmtWithoutLiterals)
+}
+
+// extractQuotedStrings extracts 0 or many substrings
+// that have been single- or double-quoted. Ex:
+// `"Hello", silly 'elephant' from the "zoo".`
+// returns [ `Hello`, `'elephant'`, `"zoo"` ]
+func extractQuotedStrings(s string) ([]string, error) {
+	var found []string
+	toFind := []*regexp.Regexp{
+		doubleQuotedPhrases,
+		singleQuotedPhrases,
+	}
+	for _, typeOfPhrase := range toFind {
+		found = append(found, typeOfPhrase.FindAllString(s, -1)...)
+	}
+	return found, nil
 }

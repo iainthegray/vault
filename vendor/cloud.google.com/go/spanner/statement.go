@@ -78,13 +78,14 @@ func (s *Statement) convertParams() (*structpb.Struct, map[string]*sppb.Type, er
 	return params, paramTypes, nil
 }
 
-// errBindParam returns error for not being able to bind parameter to query request.
+// errBindParam returns error for not being able to bind parameter to query
+// request.
 func errBindParam(k string, v interface{}, err error) error {
 	if err == nil {
 		return nil
 	}
-	se, ok := toSpannerError(err).(*Error)
-	if !ok {
+	var se *Error
+	if !errorAs(err, &se) {
 		return spannerErrorf(codes.InvalidArgument, "failed to bind query parameter(name: %q, value: %v), error = <%v>", k, v, err)
 	}
 	se.decorate(fmt.Sprintf("failed to bind query parameter(name: %q, value: %v)", k, v))
